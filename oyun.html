@@ -1,0 +1,606 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ovky Bilgi Yarışması - Nihai Sürüm</title>
+    <!-- Tailwind CSS, React, Babel, Firebase Yüklemesi -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.development.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.development.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/6.26.0/babel.min.js"></script>
+    <!-- Firebase SDK'ları -->
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js"></script>
+    <style>
+        body { font-family: 'Inter', sans-serif; background-color: #f7fafc; }
+        .shadow-3xl { box-shadow: 0 35px 60px -15px rgba(0, 0, 0, 0.3); }
+        .gradient-button { background-image: linear-gradient(to right, #6366f1 0%, #3b82f6 100%); }
+        .gradient-button:hover { background-image: linear-gradient(to right, #4f46e5 0%, #2563eb 100%); }
+    </style>
+</head>
+<body>
+
+<div id="root"></div>
+
+<script type="text/babel">
+    // --- KRİTİK: Firebase Global Değişkenleri ---
+    // BU ALANLARI KENDİ FIREBASE PROJENİZİN BİLGİLERİYLE DEĞİŞTİRİN
+    window.__app_id = 'YOUR_APP_ID_HERE'; 
+    window.__firebase_config = JSON.stringify({
+        apiKey: "AIzaSyCIguwhWSomYktTSv_qlt0wYzakte35FhY",
+        authDomain: "ovkyoyun.firebaseapp.com",
+        projectId: "ovkyoyun",
+        storageBucket: "ovkyoyun.firebasestorage.app",
+        messagingSenderId: "283924737233",
+        appId: "1:283924737233:web:d27f8bd1cc1953a7c6e9f0"
+    });
+    window.__initial_auth_token = null; 
+    // ----------------------------------------------------
+
+    const { useState, useEffect, useCallback, useMemo } = React;
+    
+    // Firebase kütüphanelerini pencere objesinden alın
+    const { initializeApp } = firebase;
+    const { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } = firebase.auth;
+    const { getFirestore, doc, setDoc, updateDoc, onSnapshot, collection, query, where, getDocs, addDoc } = firebase.firestore;
+    
+    // Lucide ikonları
+    const { 
+        Loader, Zap, Users, LogIn, Crown, Play, Clipboard, X, Check, 
+        Home, User, Star, ArrowRight, Trophy, Medal, AlertTriangle, Lightbulb, 
+        List, Settings, Book, Flask, Scale, Dumbbell
+    } = lucide;
+
+    // --- Sabitler ve Yardımcı Fonksiyonlar ---
+
+    const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+    const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+    const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? initialAuthToken : null;
+
+    const BASE_POINTS = 100;
+    const MAX_SPEED_BONUS = 50;
+    const ANSWER_WINDOW_SECONDS = 15;
+    const APP_NAME = "Ovky Bilgi Yarışması";
+    
+    const CATEGORIES = [
+        { key: 'General', label: 'Genel Kültür', icon: List },
+        { key: 'History', label: 'Tarih', icon: Book },
+        { key: 'Science', label: 'Bilim', icon: Flask },
+        { key: 'Sports', label: 'Spor', icon: Dumbbell },
+        { key: 'Literature', label: 'Edebiyat', icon: Scale },
+    ];
+    
+    let app; 
+
+    const AVATAR_LIST = [
+        "adventurer/male/1", "adventurer/male/2", "adventurer/male/3", "adventurer/male/4",
+        "adventurer/male/5", "adventurer/male/6",
+        "adventurer/female/7", "adventurer/female/8", "adventurer/female/9", "adventurer/female/10",
+    ];
+
+    const getAvatarUrl = (seed) => {
+        const parts = seed.split('/');
+        const uniqueSeed = parts[parts.length - 1];
+        return `https://api.dicebear.com/8.x/adventurer/svg?seed=${uniqueSeed}&flip=true&radius=50`;
+    };
+
+    const ErrorDisplay = ({ message }) => (
+        <div className="p-4 bg-red-100 text-red-700 border border-red-300 rounded-lg shadow-md mt-4">
+            <p className="font-semibold">Hata:</p>
+            <p>{message}</p>
+        </div>
+    );
+
+    const generateRoomCode = () => {
+        return Math.random().toString(36).substring(2, 10).toUpperCase();
+    };
+
+    // --- API İşlevleri ---
+
+    const generateQuizData = async (questionCount = 10, category = 'Genel Kültür', excludedThemes = []) => {
+        const exclusionPrompt = excludedThemes.length > 0 
+            ? `Daha önce sorulan temalardan (${excludedThemes.join(', ')}) KAÇININ.` 
+            : '';
+
+        const userQuery = `Oluşturulacak çok oyunculu yarışma için, 4 şıklı ve her şık için açıklama (rationale) içeren ${questionCount} adet ${category} sorusu hazırla. Yanıtın yalnızca JSON formatında olmalıdır. Doğru şıkkın indeksini (0'dan başlayarak) 'correctIndex' alanına koy. Türkçe karakter kullan.`;
+        
+        const apiKey = ""; 
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+        const responseSchema = {
+            type: "ARRAY",
+            items: {
+                type: "OBJECT",
+                properties: {
+                    "question": { "type": "STRING", "description": "Yarışma sorusu metni." },
+                    "options": {
+                        "type": "ARRAY",
+                        "items": {
+                            "type": "OBJECT",
+                            "properties": {
+                                "text": { "type": "STRING" },
+                                "rationale": { "type": "STRING" }
+                            },
+                            "required": ["text", "rationale"]
+                        }
+                    },
+                    "correctIndex": { "type": "INTEGER", "description": "Doğru cevabın 0'dan başlayan indeksi." }
+                },
+                "required": ["question", "options", "correctIndex"]
+            }
+        };
+
+        const payload = {
+            contents: [{ parts: [{ text: userQuery }] }],
+            systemInstruction: {
+                parts: [{ text: `Soruların zorluk seviyesi artan bir sırada olmalıdır. İlk %30'luk kısım 'Kolay', sonraki %40 'Orta', son %30'luk kısım 'Zor' olmalıdır. ${category} kategorisine odaklan. ${exclusionPrompt}` }]
+            },
+            generationConfig: {
+                responseMimeType: "application/json",
+                responseSchema: responseSchema,
+                temperature: 0.7
+            },
+        };
+
+        try {
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+
+            const result = await response.json();
+            
+            if (result.candidates && result.candidates.length > 0 && result.candidates[0].content && result.candidates[0].content.parts) {
+                const jsonText = result.candidates[0].content.parts[0].text;
+                const parsedData = JSON.parse(jsonText);
+                return parsedData.slice(0, questionCount);
+            }
+            throw new Error("API, geçerli bir JSON yapısı döndürmedi.");
+
+        } catch (error) {
+            console.error("Quiz API Hatası:", error);
+            return [
+                { "question": `API Hatası: ${category} kategorisinde örnek soru?`, "options": [{ "text": "Cevap A", "rationale": "Örnek A." }, { "text": "Cevap B", "rationale": "Örnek B." }, { "text": "Cevap C", "rationale": "Örnek C." }, { "text": "Cevap D", "rationale": "Örnek D." }], "correctIndex": 1 }
+            ];
+        }
+    };
+
+    const analyzePerformance = async (quizData, score, totalQuestions) => {
+        const answeredQuestions = quizData.map((q, index) => ({
+            question: q.question,
+            correct: q.answeredIndex === q.correctIndex,
+            difficulty: index < totalQuestions * 0.3 ? 'Kolay' : (index < totalQuestions * 0.7 ? 'Orta' : 'Zor')
+        }));
+        
+        const userQuery = `Kullanıcı ${totalQuestions} sorudan oluşan bir bilgi yarışmasında ${score} puan aldı. İşte sorular ve cevap durumları: ${JSON.stringify(answeredQuestions)}. Raporda: 1. Güçlü olduğu zorluk seviyelerini belirt. 2. Geliştirmesi gereken zorluk seviyeleri veya genel temaları belirt. 3. Sonuç odaklı bir geri bildirim sağla.`;
+
+        const apiKey = "";
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+        const payload = {
+            contents: [{ parts: [{ text: userQuery }] }],
+            systemInstruction: { parts: [{ text: "Sen bir quiz koçusun. Kibar, motive edici ve yapıcı bir dille geri bildirim sağla." }] },
+            generationConfig: { temperature: 0.8 }
+        };
+
+        try {
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            
+            const result = await response.json();
+            return result.candidates?.[0]?.content?.parts?.[0]?.text || "Analiz alınamadı, lütfen tekrar deneyin.";
+            
+        } catch (error) {
+            console.error("Analiz API Hatası:", error);
+            return "API'ye erişim sırasında hata oluştu. Lütfen bağlantınızı kontrol edin.";
+        }
+    };
+    
+    const generateNickname = async (selectedAvatar) => {
+        const userQuery = `Bu avatar (${selectedAvatar}) için, eğlenceli ve yaratıcı, 15 karakteri geçmeyen, tek kelimelik bir takma ad (nickname) öner. Cevabın sadece takma ad olmalıdır.`;
+        const apiKey = "";
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+        const payload = { contents: [{ parts: [{ text: userQuery }] }], generationConfig: { temperature: 0.9 } };
+
+        try {
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            
+            const result = await response.json();
+            const rawNickname = result.candidates?.[0]?.content?.parts?.[0]?.text || "YapayZekaKoç";
+            return rawNickname.trim().replace(/['".,]/g, '').substring(0, 15);
+            
+        } catch (error) {
+            console.error("Nickname API Hatası:", error);
+            return "HataNick";
+        }
+    };
+    
+    const getDeepExplanation = async (question) => {
+        const userQuery = `Aşağıdaki bilgi yarışması sorusunun konusunu (cevap vermeden) kısaca ve eğitici bir şekilde açıkla. Cevabın 3 cümleyi geçmesin. Soru: "${question}"`;
+        const apiKey = "";
+        const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+        const payload = { contents: [{ parts: [{ text: userQuery }] }], systemInstruction: { parts: [{ text: "Kısa ve eğitici bilgi özetleri sağla." }] }, generationConfig: { temperature: 0.5 } };
+
+        try {
+            const response = await fetch(apiUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            
+            const result = await response.json();
+            return result.candidates?.[0]?.content?.parts?.[0]?.text || "Açıklama alınamadı.";
+            
+        } catch (error) {
+            console.error("Açıklama API Hatası:", error);
+            return "Açıklama yüklenirken bir hata oluştu.";
+        }
+    };
+
+
+    // --- Ana Uygulama Bileşeni ---
+
+    const App = () => {
+        const [db, setDb] = useState(null);
+        const [auth, setAuth] = useState(null);
+        const [userId, setUserId] = useState(null);
+        const [isAuthReady, setIsAuthReady] = useState(false);
+        const [error, setError] = useState(null);
+        const [loading, setLoading] = useState(false);
+        const [localNickname, setLocalNickname] = useState('');
+        const [selectedAvatar, setSelectedAvatar] = useState(AVATAR_LIST[0]); 
+        
+        const [gameMode, setGameMode] = useState('menu'); // 'menu', 'onlineLobby', 'online', 'singlePlayer'
+        
+        const [roomId, setRoomId] = useState(null);
+        const [roomData, setRoomData] = useState(null);
+        const [deepExplanation, setDeepExplanation] = useState(null); 
+        
+        const [singlePlayerGame, setSinglePlayerGame] = useState({
+            status: 'setup', 
+            quizData: [],
+            currentIndex: 0,
+            score: 0,
+            questionCount: 10,
+            selectedCategory: 'General', 
+            analysisResult: null
+        });
+
+        // YENİ: Genel Lobi State'i
+        const [activeRooms, setActiveRooms] = useState([]);
+        
+        const [soloHistory, setSoloHistory] = useState([]);
+
+        // --- HOOK'lar ve Yardımcı Fonksiyonlar ---
+
+        const handleGoToMenu = () => {
+            setGameMode('menu');
+            setRoomId(null);
+            setRoomData(null);
+            setDeepExplanation(null);
+            setActiveRooms([]);
+            setSinglePlayerGame(prev => ({ ...prev, status: 'setup', quizData: [], currentIndex: 0, score: 0, analysisResult: null }));
+            setError(null);
+        };
+        
+        const isHost = useMemo(() => {
+            return roomData && roomData.hostId === userId;
+        }, [roomData, userId]);
+
+        const getNickname = useCallback((id) => {
+            if (!id) return "Bilinmeyen";
+            return roomData?.players?.[id]?.nickname || `Oyuncu ${id.substring(0, 4)}`;
+        }, [roomData]);
+
+        const getPlayerAvatar = useCallback((id) => {
+            const seed = roomData?.players?.[id]?.avatar || AVATAR_LIST[0];
+            return getAvatarUrl(seed);
+        }, [roomData]);
+        
+        const getCategoryIcon = useCallback((key) => {
+            const category = CATEGORIES.find(c => c.key === key);
+            return category ? category.icon : List;
+        }, []);
+        
+        // 1. Firebase Başlatma ve Yetkilendirme
+        useEffect(() => {
+            if (Object.keys(firebaseConfig).length === 0) {
+                setError("Firebase yapılandırması eksik. Uygulama çalıştırılamaz.");
+                setIsAuthReady(true);
+                return;
+            }
+
+            try {
+                if (!app) {
+                    app = initializeApp(firebaseConfig);
+                }
+                
+                const firestoreDb = getFirestore(app);
+                const firebaseAuth = getAuth(app);
+                setDb(firestoreDb);
+                setAuth(firebaseAuth);
+
+                const unsubscribe = onAuthStateChanged(firebaseAuth, async (user) => {
+                    if (!user) {
+                        try {
+                            if (initialAuthToken) {
+                                await signInWithCustomToken(firebaseAuth, initialAuthToken);
+                            } else {
+                                await signInAnonymously(firebaseAuth);
+                            }
+                        } catch (e) {
+                            console.error("Firebase Auth Hatası:", e);
+                            setError("Kullanıcı doğrulama başarısız.");
+                        }
+                    } else {
+                        setUserId(user.uid);
+                    }
+                    setIsAuthReady(true);
+                });
+
+                return () => unsubscribe();
+            } catch (e) {
+                console.error("Firebase Başlatma Hatası:", e);
+                setError("Firebase hizmetleri başlatılamadı.");
+                setIsAuthReady(true);
+            }
+        }, []);
+
+        // 2. Firestore Oda Verilerini Dinleme
+        useEffect(() => {
+            if (!db || !roomId || gameMode !== 'online') return;
+
+            const roomDocRef = doc(db, `artifacts/${appId}/public/data/rooms`, roomId);
+
+            const unsubscribe = onSnapshot(roomDocRef, (docSnap) => {
+                if (docSnap.exists()) {
+                    setRoomData(docSnap.data());
+                    setDeepExplanation(null); 
+                } else {
+                    setRoomId(null);
+                    setRoomData(null);
+                    setGameMode('onlineLobby'); 
+                    setError("Oda bağlantısı koptu veya oda silindi.");
+                }
+            }, (e) => {
+                console.error("Firestore Dinleme Hatası:", e);
+                setError("Oda verileri alınamadı.");
+            });
+
+            return () => unsubscribe();
+        }, [db, roomId, gameMode]);
+        
+        // 3. Genel Lobi Aktif Odaları Dinleme (YENİ)
+        useEffect(() => {
+            if (!db || gameMode !== 'onlineLobby') return;
+
+            const roomsCollRef = collection(db, `artifacts/${appId}/public/data/rooms`);
+            // Sadece bekleme (waiting) durumundaki odaları dinle
+            const q = query(roomsCollRef, where("status", "==", "waiting")); 
+
+            const unsubscribe = onSnapshot(q, (snapshot) => {
+                const rooms = snapshot.docs.map(doc => ({
+                    id: doc.id,
+                    ...doc.data()
+                }));
+                setActiveRooms(rooms);
+            }, (e) => {
+                console.error("Genel Lobi Dinleme Hatası:", e);
+            });
+
+            return () => unsubscribe();
+        }, [db, gameMode]);
+        
+        // 4. Tek Kişilik Skor Geçmişini Dinleme
+        useEffect(() => {
+            if (!db || !userId) return;
+
+            const historyCollRef = collection(db, `artifacts/${appId}/users/${userId}/solo_history`);
+            const q = query(historyCollRef); 
+
+            const unsubscribe = onSnapshot(q, (snapshot) => {
+                const historyData = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+                historyData.sort((a, b) => b.score - a.score);
+                setSoloHistory(historyData);
+            }, (e) => {
+                console.error("Tek kişilik skor geçmişi alınamadı:", e);
+            });
+
+            return () => unsubscribe();
+            
+        }, [db, userId]);
+        
+        // 5. Otomatik Soru Geçişi (SADECE HOST İÇİN)
+        useEffect(() => {
+            if (!db || !roomId || !isHost || roomData?.status !== 'playing' || !roomData?.questionStartTime) return;
+            
+            const allAnswered = roomData.players && Object.values(roomData.players).every(p => p.latestAnswerTime !== null);
+            const timeElapsed = (new Date().getTime() - roomData.questionStartTime) / 1000;
+            
+            if (allAnswered || timeElapsed >= ANSWER_WINDOW_SECONDS) {
+                const timeout = setTimeout(() => {
+                    handleNextQuestionOnline();
+                }, 1000); 
+                return () => clearTimeout(timeout);
+            }
+
+        }, [db, roomId, isHost, roomData]);
+
+        // --- Online İşlevleri ---
+
+        const handleCreateRoom = async (questionCount, category) => {
+            if (!db || !userId || localNickname.trim() === '' || !selectedAvatar) return;
+            setLoading(true);
+            setError(null);
+            try {
+                const uniqueCode = generateRoomCode();
+                const newRoomRef = doc(db, `artifacts/${appId}/public/data/rooms`, uniqueCode);
+
+                const categoryLabel = CATEGORIES.find(c => c.key === category).label;
+                
+                const initialRoomData = {
+                    code: uniqueCode, 
+                    hostId: userId,
+                    status: 'waiting',
+                    currentQuestionIndex: -1,
+                    quizData: [],
+                    questionCount: questionCount,
+                    category: categoryLabel,
+                    players: {
+                        [userId]: {
+                            score: 0,
+                            latestAnswerTime: null,
+                            isHost: true,
+                            nickname: localNickname.trim(),
+                            avatar: selectedAvatar 
+                        }
+                    }
+                };
+                await setDoc(newRoomRef, initialRoomData);
+                setRoomId(uniqueCode);
+                setGameMode('online'); // Doğrudan odaya geç
+            } catch (e) {
+                console.error("Oda Oluşturma Hatası:", e);
+                setError("Oda oluşturulurken bir hata oluştu: " + e.message);
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        const handleJoinRoomByClick = async (roomID) => {
+            if (!db || !userId || localNickname.trim() === '' || !selectedAvatar) return;
+            setLoading(true);
+            setError(null);
+            try {
+                const roomDocRef = doc(db, `artifacts/${appId}/public/data/rooms`, roomID);
+                const roomDoc = await roomDocRef.get();
+
+                if (!roomDoc.exists) {
+                    setError("Oda bulunamadı veya silinmiş.");
+                    setLoading(false);
+                    return;
+                }
+                
+                const roomData = roomDoc.data();
+                if (roomData.status !== 'waiting') {
+                    setError("Oyun zaten başladı.");
+                    setLoading(false);
+                    return;
+                }
+                
+                const newPlayers = {
+                    ...roomData.players,
+                    [userId]: {
+                        score: roomData.players?.[userId]?.score || 0,
+                        latestAnswerTime: null,
+                        isHost: roomData.hostId === userId,
+                        nickname: localNickname.trim(),
+                        avatar: selectedAvatar
+                    }
+                };
+                await updateDoc(roomDocRef, { players: newPlayers });
+                setRoomId(roomDoc.id);
+                setGameMode('online'); // Odaya başarıyla geç
+            } catch (e) {
+                console.error("Odaya Katılma Hatası:", e);
+                setError("Odaya katılırken bir hata oluştu. Lütfen tekrar deneyin.");
+            } finally {
+                setLoading(false);
+            }
+        };
+        
+        // --- Tek Kişilik İşlevleri ---
+        
+        const handleStartSinglePlayer = async () => {
+            if (loading) return;
+            setLoading(true);
+            setError(null);
+            
+            // Daha önce sorulan temaları topla
+            const excludedThemes = soloHistory.reduce((acc, game) => {
+                if (game.quizHistory) {
+                    try {
+                        const history = JSON.parse(game.quizHistory);
+                        history.forEach(q => acc.add(q.question));
+                    } catch (e) {
+                        console.error("Geçmiş pars edilemedi:", e);
+                    }
+                }
+                return acc;
+            }, new Set());
+            
+            const count = singlePlayerGame.questionCount;
+            const categoryLabel = CATEGORIES.find(c => c.key === singlePlayerGame.selectedCategory).label;
+            
+            const quiz = await generateQuizData(count, categoryLabel, Array.from(excludedThemes).slice(0, 50)); // Maks. 50 tema gönder
+            if (quiz.length === 0) {
+                setError("Sorular üretilemedi. Lütfen tekrar deneyin.");
+                setLoading(false);
+                return;
+            }
+            setSinglePlayerGame({
+                ...singlePlayerGame,
+                status: 'playing',
+                quizData: quiz.map(q => ({...q, answeredIndex: null, isCorrect: null})), 
+                currentIndex: 0,
+                score: 0,
+                questionStartTime: new Date().getTime(),
+                analysisResult: null
+            });
+            setLoading(false);
+        };
+        
+        const handleAnswerSinglePlayer = (selectedIndex) => {
+            const { quizData, currentIndex, score, questionStartTime } = singlePlayerGame;
+            const currentQuestion = quizData[currentIndex];
+            
+            if (currentQuestion.answeredIndex !== null) return;
+            
+            const isCorrect = selectedIndex === currentQuestion.correctIndex;
+            const answerTime = new Date().getTime();
+            const timeTaken = (answerTime - questionStartTime) / 1000;
+            
+            let newScore = score;
+            if (isCorrect) {
+                const decayFactor = Math.min(1, timeTaken / ANSWER_WINDOW_SECONDS);
+                const bonus = Math.floor(MAX_SPEED_BONUS * (1 - decayFactor));
+                newScore += BASE_POINTS + bonus;
+            }
+            
+            const updatedQuizData = [...quizData];
+            updatedQuizData[currentIndex] = { ...currentQuestion, answeredIndex: selectedIndex, isCorrect: isCorrect };
+
+            setSinglePlayerGame(prev => ({ ...prev, score: newScore, quizData: updatedQuizData }));
+        };
+        
+        const handleNextSinglePlayer = async () => {
+            const { quizData, currentIndex, score } = singlePlayerGame;
+            const nextIndex = currentIndex + 1;
+            
+            if (nextIndex < quizData.length) {
+                setSinglePlayerGame(prev => ({ ...prev, currentIndex: nextIndex, questionStartTime: new Date().getTime() }));
+            } else {
+                setLoading(true);
+                const categoryLabel = CATEGORIES.find(c => c.key === singlePlayerGame.selectedCategory).label;
+
+                await saveSoloGameResult(score, quizData.length, categoryLabel, localNickname, selectedAvatar, quizData); 
+                setLoading(false);
+                
+                setSinglePlayerGame(prev => ({ ...prev, status: 'finished' }));
+            }
+        };
+
+        const handleAnalyzePerformance = async () => {
+            //
